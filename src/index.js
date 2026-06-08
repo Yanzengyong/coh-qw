@@ -8,7 +8,7 @@ const config = {
   targetUrl: env('TARGET_URL', 'https://cohcigars.com/cigars-bundle-clearance'),
   country: env('COH_COUNTRY', 'China'),
   intervalSeconds: numberEnv('CHECK_INTERVAL_SECONDS', 60),
-  requestTimeoutMs: numberEnv('REQUEST_TIMEOUT_MS', 20000),
+  requestTimeoutMs: numberEnv('REQUEST_TIMEOUT_MS', 60000),
   stateFile: path.resolve(process.cwd(), env('STATE_FILE', 'data/coh-clearance-state.json')),
   firstRunNotify: boolEnv('FIRST_RUN_NOTIFY', false),
   includePriceChanges: boolEnv('INCLUDE_PRICE_CHANGES', true),
@@ -64,7 +64,7 @@ async function main() {
 
   console.log(`Monitoring ${config.targetUrl}`);
   console.log(`Country: ${config.country}; interval: ${config.intervalSeconds}s; push: ${config.pushProvider}`);
-  await runOnce();
+  await runOnce().catch((error) => console.error(`[${now()}] Check failed:`, error.message));
   setInterval(() => {
     runOnce().catch((error) => console.error(`[${now()}] Check failed:`, error.message));
   }, config.intervalSeconds * 1000);
@@ -93,6 +93,7 @@ async function runOnce() {
   const hasChanges =
     diff.added.length > 0 ||
     diff.removed.length > 0 ||
+    diff.lowStock.length > 0 ||
     (config.includePriceChanges && diff.priceChanged.length > 0);
 
   if (!hasChanges) {
@@ -229,6 +230,7 @@ function parseBundleProducts($, pageUrl) {
       name,
       price: price || extractPrice(text),
       url: cartUrl || pageUrl,
+      stock: stock ? Number(stock) : undefined,
       status: stock ? `可购买，库存 ${stock}` : extractStatus(text) || '可购买',
       box,
       raw: text.slice(0, 500),
@@ -263,11 +265,28 @@ function compareProducts(previous, current, history = []) {
     .filter((item) => !oldMap.has(item.id))
     .map((item) => addHistoricalPriceComparison(item, history));
   const removed = previous.filter((item) => !newMap.has(item.id));
+  const lowStock = current.filter((item) => isNewLowStock(item, oldMap.get(item.id)));
   const priceChanged = current
     .filter((item) => oldMap.has(item.id) && normalizePrice(oldMap.get(item.id).price) !== normalizePrice(item.price))
     .map((item) => ({ before: oldMap.get(item.id), after: item }));
 
-  return { added, removed, priceChanged };
+  return { added, removed, lowStock, priceChanged };
+}
+
+function isNewLowStock(current, previous) {
+  const currentStock = getProductStock(current);
+  if (![1, 2].includes(currentStock)) return false;
+
+  const previousStock = previous ? getProductStock(previous) : undefined;
+  return previousStock !== currentStock;
+}
+
+function getProductStock(product) {
+  if (!product) return undefined;
+  if (Number.isFinite(product.stock)) return product.stock;
+
+  const match = (product.status || '').match(/库存\s*(\d+)/);
+  return match ? Number(match[1]) : undefined;
 }
 
 function addHistoricalPriceComparison(product, history) {
@@ -393,22 +412,23 @@ function formatDiff(diff) {
 async function sendDiffNotifications(diff) {
   const checkedAt = `检查时间：${new Date().toLocaleString()}`;
   const sections = [
-    ['上架', diff.added],
-    ['下架', diff.removed],
+    ['上架', diff.added, {}],
+    ['库存告紧，即将下架', diff.lowStock, {}],
+    ['下架', diff.removed, { includeStatus: false }],
   ];
 
   if (config.includePriceChanges) {
-    sections.push(['价格变化', diff.priceChanged]);
+    sections.push(['价格变化', diff.priceChanged, {}]);
   }
 
-  for (const [sectionTitle, items] of sections) {
+  for (const [sectionTitle, items, options] of sections) {
     if (!items.length) continue;
     const title = `COH Bundled Clearance ${sectionTitle} ${items.length} 个`;
     const formattedItems = sectionTitle === '价格变化'
       ? items.map(({ before, after }) => {
           return `${after.name}\n${before.price || '未知价格'} -> ${after.price || '未知价格'}\n${after.url}`;
         })
-      : items.map(formatProduct);
+      : items.map((item) => formatProduct(item, options));
     await sendNotification(title, [`【${sectionTitle}】`, ...formatItemBlocks(formattedItems), checkedAt].join('\n'));
   }
 }
@@ -435,7 +455,8 @@ function appendSection(lines, title, items) {
   if (items.length > config.maxNotifyItems) lines.push(`还有 ${items.length - config.maxNotifyItems} 条未列出。`, '');
 }
 
-function formatProduct(product) {
+function formatProduct(product, options = {}) {
+  const includeStatus = options.includeStatus !== false;
   const parts = [product.name];
   if (product.price) {
     const landedPrice = product.landedPrice ? `【大约到手 ${product.landedPrice}】` : '';
@@ -444,7 +465,7 @@ function formatProduct(product) {
   if (product.unitPrice) parts.push(`单只价格：${product.unitPrice}`);
   if (product.quantity) parts.push(`商品数量：${product.quantity} 支`);
   if (product.priceComparison) parts.push(`比价结果：${product.priceComparison}`);
-  if (product.status) parts.push(`状态：${product.status}`);
+  if (includeStatus && product.status) parts.push(`状态：${product.status}`);
   parts.push(`链接：${shortProductUrl(product)}`);
   return parts.join('\n');
 }
