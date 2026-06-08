@@ -12,7 +12,6 @@ const config = {
   stateFile: path.resolve(process.cwd(), env('STATE_FILE', 'data/coh-clearance-state.json')),
   firstRunNotify: boolEnv('FIRST_RUN_NOTIFY', false),
   includePriceChanges: boolEnv('INCLUDE_PRICE_CHANGES', true),
-  maxNotifyItems: numberEnv('MAX_NOTIFY_ITEMS', 20),
   pushProvider: env('PUSH_PROVIDER', ''),
   pushplusToken: env('PUSHPLUS_TOKEN', ''),
   pushplusTopic: env('PUSHPLUS_TOPIC', ''),
@@ -434,25 +433,19 @@ async function sendDiffNotifications(diff) {
 }
 
 function formatItemBlocks(items) {
-  const blocks = items.slice(0, config.maxNotifyItems);
-  if (items.length > config.maxNotifyItems) {
-    blocks.push(`还有 ${items.length - config.maxNotifyItems} 条未列出。`);
-  }
-  return blocks.flatMap((item, index) => ['', '------------------------------', `${index + 1}. ${item}`]);
+  return items.flatMap((item, index) => ['', '------------------------------', `${index + 1}. ${item}`]);
 }
 
 function formatInitialSnapshot(products) {
   const lines = [`当前共 ${products.length} 个商品。`, ''];
-  for (const product of products.slice(0, config.maxNotifyItems)) lines.push(formatProduct(product), '');
-  if (products.length > config.maxNotifyItems) lines.push(`还有 ${products.length - config.maxNotifyItems} 个商品未列出。`);
+  for (const product of products) lines.push(formatProduct(product), '');
   return lines.join('\n').trim();
 }
 
 function appendSection(lines, title, items) {
   if (!items.length) return;
   lines.push(`【${title}】`);
-  for (const item of items.slice(0, config.maxNotifyItems)) lines.push(item, '');
-  if (items.length > config.maxNotifyItems) lines.push(`还有 ${items.length - config.maxNotifyItems} 条未列出。`, '');
+  for (const item of items) lines.push(item, '');
 }
 
 function formatProduct(product, options = {}) {
